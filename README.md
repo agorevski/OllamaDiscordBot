@@ -85,6 +85,96 @@ python discord_ollama_bot.py
 
 You should see output indicating the bot has connected and synced commands to your server.
 
+### 7. Configure Auto-Start on System Boot (Optional)
+
+To have the bot start automatically when your Linux/Ubuntu system boots, you can create a systemd service.
+
+#### Create a systemd service file:
+
+1. Create a new service file:
+   ```bash
+   sudo nano /etc/systemd/system/discord-ollama-bot.service
+   ```
+
+2. Add the following configuration (adjust paths as needed):
+   ```ini
+   [Unit]
+   Description=Discord Ollama Bot
+   After=network.target
+   # If Ollama is also managed by systemd, add this line:
+   # After=ollama.service
+   
+   [Service]
+   Type=simple
+   User=YOUR_USERNAME
+   WorkingDirectory=/path/to/OllamaDiscordBot
+   ExecStart=/usr/bin/python3 /path/to/OllamaDiscordBot/discord_ollama_bot.py
+   Restart=always
+   RestartSec=10
+   StandardOutput=journal
+   StandardError=journal
+   
+   # Environment variables (alternatively, the bot reads from .env file)
+   # Environment="DISCORD_BOT_TOKEN=your_token_here"
+   # Environment="OLLAMA_HOST=http://localhost:11434"
+   
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+3. **Important**: Replace the following placeholders:
+   - `YOUR_USERNAME` - Your Linux username (e.g., `john`)
+   - `/path/to/OllamaDiscordBot` - Full path to your bot directory (e.g., `/home/john/OllamaDiscordBot`)
+   - `/usr/bin/python3` - Path to Python (find with `which python3`)
+
+4. If you're using a Python virtual environment, modify the `ExecStart` line:
+   ```ini
+   ExecStart=/path/to/OllamaDiscordBot/venv/bin/python /path/to/OllamaDiscordBot/discord_ollama_bot.py
+   ```
+
+#### Enable and start the service:
+
+```bash
+# Reload systemd to recognize the new service
+sudo systemctl daemon-reload
+
+# Enable the service to start on boot
+sudo systemctl enable discord-ollama-bot.service
+
+# Start the service now
+sudo systemctl start discord-ollama-bot.service
+
+# Check the service status
+sudo systemctl status discord-ollama-bot.service
+```
+
+#### Managing the service:
+
+```bash
+# Stop the bot
+sudo systemctl stop discord-ollama-bot.service
+
+# Restart the bot
+sudo systemctl restart discord-ollama-bot.service
+
+# Disable auto-start on boot
+sudo systemctl disable discord-ollama-bot.service
+
+# View bot logs
+sudo journalctl -u discord-ollama-bot.service -f
+
+# View recent logs (last 50 lines)
+sudo journalctl -u discord-ollama-bot.service -n 50
+```
+
+#### Troubleshooting Auto-Start:
+
+- **Service fails to start**: Check logs with `sudo journalctl -u discord-ollama-bot.service -n 50`
+- **Permission errors**: Ensure the user in the service file has read access to the bot directory and `.env` file
+- **Ollama not available**: Make sure Ollama starts before the bot (add `After=ollama.service` if Ollama is systemd-managed)
+- **Path issues**: Use absolute paths for all directories and executables in the service file
+- **Changes not applying**: Run `sudo systemctl daemon-reload` after editing the service file
+
 ## Available Commands
 
 All commands are slash commands and all responses are **private** (only you can see them).
