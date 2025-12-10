@@ -2,33 +2,6 @@
 
 This document catalogs development anti-patterns identified in the Discord Ollama Bot codebase. Each pattern includes severity level, location, problem description, and recommended solutions.
 
-## 2. Import Inside Function
-
-**Severity:** 🟡 Medium  
-**Location:** Line 52 inside `generate()` method
-
-### Problem
-The `json` module is imported inside an async loop:
-
-```python
-async for line in response.content:
-    if line:
-        try:
-            import json  # ❌ Import inside loop
-            chunk = json.loads(line.decode('utf-8'))
-```
-
-This violates Python conventions and creates unnecessary overhead on every iteration.
-
-### Best Practice
-Move all imports to module level (top of file):
-
-```python
-import json  # At the top with other imports
-```
-
----
-
 ## 3. Missing Type Hints
 
 **Severity:** 🟡 Low-Medium  
@@ -457,30 +430,26 @@ if final_context:
 ## Summary by Priority
 
 ### 🔴 High Priority (Fix First)
-1. **Resource Leaks** - ClientSession management
-2. **Import Inside Function** - Move to module level
-3. **Global Mutable State** - Encapsulate in classes
+- **Global Mutable State** - Encapsulate in classes
 
 ### 🟡 Medium Priority (Important)
-4. **Repeated Code** - Extract message chunking logic
-5. **Bare Exception Handling** - Use specific exceptions
-6. **Silent Failures** - Notify users of errors
-7. **Missing Validation** - Validate configuration
-8. **Tight Coupling** - Use dependency injection
+- **Repeated Code** - Extract message chunking logic
+- **Bare Exception Handling** - Use specific exceptions
+- **Silent Failures** - Notify users of errors
+- **Missing Validation** - Validate configuration
+- **Tight Coupling** - Use dependency injection
 
 ### 🟢 Low Priority (Nice to Have)
-9. **Missing Type Hints** - Complete type annotations
-10. **Hard-Coded Magic Numbers** - Extract to constants
-11. **Inconsistent Error Messages** - Standardize formatting
-12. **Inefficient Context Storage** - Add trimming logic
+- **Missing Type Hints** - Complete type annotations
+- **Hard-Coded Magic Numbers** - Extract to constants
+- **Inconsistent Error Messages** - Standardize formatting
+- **Inefficient Context Storage** - Add trimming logic
 
 ---
 
 ## Recommended Refactoring Approach
 
 1. **Phase 1 - Critical Fixes**
-   - Fix ClientSession leaks (prevents resource exhaustion)
-   - Move import statement (simple, immediate benefit)
    - Add configuration validation (prevents runtime errors)
 
 2. **Phase 2 - Code Quality**
