@@ -2,57 +2,6 @@
 
 This document catalogs development anti-patterns identified in the Discord Ollama Bot codebase. Each pattern includes severity level, location, problem description, and recommended solutions.
 
----
-
-## 1. Resource Leaks - Multiple ClientSession Instances
-
-**Severity:** 🔴 High  
-**Location:** `OllamaClient` class methods (lines 31, 73, 86)
-
-### Problem
-Every method in `OllamaClient` creates a new `aiohttp.ClientSession()` within the method scope:
-
-```python
-# In generate() - line 31
-async with aiohttp.ClientSession() as session:
-    # ...
-
-# In list_models() - line 73
-async with aiohttp.ClientSession() as session:
-    # ...
-
-# In check_connection() - line 86
-async with aiohttp.ClientSession() as session:
-    # ...
-```
-
-Creating sessions for each request is inefficient and can lead to:
-- Resource exhaustion with high traffic
-- Connection pool overhead
-- Unnecessary TCP handshakes
-- Memory leaks if not properly closed
-
-### Best Practice
-Create a single session during initialization and reuse it throughout the class lifecycle:
-
-```python
-class OllamaClient:
-    def __init__(self, host: str):
-        self.host = host
-        self.api_url = f"{host}/api"
-        self.session = None
-    
-    async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self.session:
-            await self.session.close()
-```
-
----
-
 ## 2. Import Inside Function
 
 **Severity:** 🟡 Medium  

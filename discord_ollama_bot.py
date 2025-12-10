@@ -3,6 +3,7 @@ from discord import app_commands
 import aiohttp
 import asyncio
 import os
+import json
 from dotenv import load_dotenv
 from typing import Optional, Dict, List
 
@@ -26,6 +27,18 @@ class OllamaClient:
     def __init__(self, host: str):
         self.host = host
         self.api_url = f"{host}/api"
+        self.session: Optional[aiohttp.ClientSession] = None
+    
+    async def __aenter__(self):
+        """Create the session when entering async context"""
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Close the session when exiting async context"""
+        if self.session:
+            await self.session.close()
+            self.session = None
 
     async def generate(
         self,
@@ -34,87 +47,102 @@ class OllamaClient:
         system: Optional[str] = None,
         context: Optional[List] = None):
         """Generate a response from Ollama with streaming support"""
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "model": model,
-                "prompt": prompt,
-                "stream": True
-            }
-            
-            if system:
-                payload["system"] = system
-            
-            if context:
-                payload["context"] = context
-            
-            try:
-                async with session.post(f"{self.api_url}/generate", json=payload) as response:
-                    if response.status == 200:
-                        full_response = ""
-                        final_context = None
-                        
-                        # Stream the response line by line
-                        async for line in response.content:
-                            if line:
-                                try:
-                                    import json
-                                    chunk = json.loads(line.decode('utf-8'))
-                                    token = chunk.get('response', '')
-                                    full_response += token
-                                    
-                                    # Get context from final chunk
-                                    if chunk.get('done', False):
-                                        final_context = chunk.get('context')
-                                    
-                                    # Yield each token as it arrives
-                                    if token:
-                                        yield token, False, final_context
-                                except json.JSONDecodeError:
-                                    continue
-                        
-                        # Signal completion
-                        yield '', True, final_context
-                    else:
-                        error_text = await response.text()
-                        yield f"Error: Ollama returned status {response.status}: {error_text}", True, None
-            except aiohttp.ClientError as e:
-                yield f"Error connecting to Ollama: {str(e)}", True, None
+        if not self.session:
+            raise RuntimeError("OllamaClient session not initialized. Use async with context manager.")
+        
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": True
+        }
+        
+        if system:
+            payload["system"] = system
+        
+        if context:
+            payload["context"] = context
+        
+        try:
+            async with self.session.post(f"{self.api_url}/generate", json=payload) as response:
+                if response.status == 200:
+                    full_response = ""
+                    final_context = None
+                    
+                    # Stream the response line by line
+                    async for line in response.content:
+                        if line:
+                            try:
+                                chunk = json.loads(line.decode('utf-8'))
+                                token = chunk.get('response', '')
+                                full_response += token
+                                
+                                # Get context from final chunk
+                                if chunk.get('done', False):
+                                    final_context = chunk.get('context')
+                                
+                                # Yield each token as it arrives
+                                if token:
+                                    yield token, False, final_context
+                            except json.JSONDecodeError:
+                                continue
+                    
+                    # Signal completion
+                    yield '', True, final_context
+                else:
+                    error_text = await response.text()
+                    yield f"Error: Ollama returned status {response.status}: {error_text}", True, None
+        except aiohttp.ClientError as e:
+            yield f"Error connecting to Ollama: {str(e)}", True, None
     
     async def list_models(self) -> List[str]:
         """Get list of available models"""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(f"{self.api_url}/tags") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        return [model['name'] for model in data.get('models', [])]
-                    else:
-                        return []
-            except aiohttp.ClientError:
-                return []
+        if not self.session:
+            raise RuntimeError("OllamaClient session not initialized. Use async with context manager.")
+        
+        try:
+            async with self.session.get(f"{self.api_url}/tags") as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return [model['name'] for model in data.get('models', [])]
+                else:
+                    return []
+        except aiohttp.ClientError:
+            return []
     
     async def check_connection(self) -> bool:
         """Check if Ollama is accessible"""
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(f"{self.host}") as response:
-                    return response.status == 200
-            except aiohttp.ClientError:
-                return False
+        if not self.session:
+            raise RuntimeError("OllamaClient session not initialized. Use async with context manager.")
+        
+        try:
+            async with self.session.get(f"{self.host}") as response:
+                return response.status == 200
+        except aiohttp.ClientError:
+            return False
 
 class OllamaBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.ollama = OllamaClient(OLLAMA_HOST)
+        self.ollama = None  # Will be initialized in setup_hook
         self.default_model = "dolphin24b"  # Default model, will be updated on startup
     
     async def setup_hook(self):
         """Setup the bot and sync commands globally"""
+        # Initialize Ollama client with proper session management
+        self.ollama = OllamaClient(OLLAMA_HOST)
+        await self.ollama.__aenter__()
+        
         # Sync commands globally to work across all guilds
         await self.tree.sync()
         print("Commands synced globally (may take ~1 hour to propagate)")
+    
+    async def close(self):
+        """Cleanup resources when bot shuts down"""
+        if self.ollama:
+            await self.ollama.__aexit__(None, None, None)
+        await super().close()
 
 # Initialize bot
 bot = OllamaBot()
