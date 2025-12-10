@@ -42,48 +42,6 @@ async def generate(
 
 ---
 
-## 4. Global Mutable State
-
-**Severity:** 🔴 Medium-High  
-**Location:** Module level (lines 15-17)
-
-### Problem
-Three module-level dictionaries store user state:
-
-```python
-user_contexts: Dict[int, List[Dict]] = {}
-user_models: Dict[int, str] = {}
-user_system_prompts: Dict[int, str] = {}
-```
-
-Issues with global mutable state:
-- Not thread-safe (though asyncio is single-threaded)
-- Lost on restart
-- Harder to test and mock
-- Violates encapsulation principles
-- Cannot easily swap implementations
-
-### Best Practice
-Encapsulate state in a dedicated class:
-
-```python
-class UserStateManager:
-    def __init__(self):
-        self._contexts: Dict[int, List[Dict]] = {}
-        self._models: Dict[int, str] = {}
-        self._system_prompts: Dict[int, str] = {}
-    
-    def get_context(self, user_id: int) -> Optional[List[Dict]]:
-        return self._contexts.get(user_id)
-    
-    def set_context(self, user_id: int, context: List[Dict]) -> None:
-        self._contexts[user_id] = context
-    
-    # ... additional methods
-```
-
----
-
 ## 5. Repeated Code - Message Chunking Logic
 
 **Severity:** 🟡 Medium  
@@ -429,9 +387,6 @@ if final_context:
 
 ## Summary by Priority
 
-### 🔴 High Priority (Fix First)
-- **Global Mutable State** - Encapsulate in classes
-
 ### 🟡 Medium Priority (Important)
 - **Repeated Code** - Extract message chunking logic
 - **Bare Exception Handling** - Use specific exceptions
@@ -458,7 +413,6 @@ if final_context:
    - Add user error notifications (better UX)
 
 3. **Phase 3 - Architecture**
-   - Encapsulate global state (better design)
    - Implement dependency injection (testability)
    - Add complete type hints (tooling support)
 

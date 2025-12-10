@@ -7,6 +7,8 @@ import json
 from dotenv import load_dotenv
 from typing import Optional, Dict, List
 
+from user_state_manager import UserStateManager
+
 # Load environment variables
 load_dotenv()
 
@@ -15,11 +17,6 @@ DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OLLAMA_HOST = os.getenv('OLLAMA_HOST')
 
 print(f"Token: {'Set' if DISCORD_TOKEN else 'Not set'}, Ollama Host: {OLLAMA_HOST}")
-
-# Store user conversations and settings
-user_contexts: Dict[int, List[Dict]] = {}
-user_models: Dict[int, str] = {}
-user_system_prompts: Dict[int, str] = {}
 
 class OllamaClient:
     """Client for interacting with local Ollama instance"""
@@ -126,6 +123,7 @@ class OllamaBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.ollama = None  # Will be initialized in setup_hook
+        self.state = UserStateManager()  # Manages per-user state
         self.default_model = "dolphin24b"  # Default model, will be updated on startup
     
     async def setup_hook(self):
@@ -181,13 +179,13 @@ async def chat(interaction: discord.Interaction, message: str):
     user_id = interaction.user.id
     
     # Get user's current model or use default
-    model = user_models.get(user_id, bot.default_model)
+    model = bot.state.get_model(user_id, bot.default_model)
     
     # Get user's system prompt if set
-    system_prompt = user_system_prompts.get(user_id)
+    system_prompt = bot.state.get_system_prompt(user_id)
     
     # Get user's conversation context
-    context = user_contexts.get(user_id)
+    context = bot.state.get_context(user_id)
     
     # Initialize streaming response
     header = f"**Model:** {model}\n**You:** {message}\n\n**AI:** "
@@ -247,7 +245,7 @@ async def chat(interaction: discord.Interaction, message: str):
         
         # Update context
         if final_context:
-            user_contexts[user_id] = final_context
+            bot.state.set_context(user_id, final_context)
         
         # Handle final message display with same multi-chunk logic
         final_chunks = [final_display[i:i+1900] for i in range(0, len(final_display), 1900)]
@@ -307,11 +305,10 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
     
     # Switch model for this user
     user_id = interaction.user.id
-    user_models[user_id] = model_name
+    bot.state.set_model(user_id, model_name)
     
     # Clear conversation context when switching models
-    if user_id in user_contexts:
-        del user_contexts[user_id]
+    bot.state.clear_context(user_id)
     
     await interaction.followup.send(
         f"✓ Switched to model: **{model_name}**\nConversation context has been reset.",
@@ -334,7 +331,7 @@ async def list_models(interaction: discord.Interaction):
         return
     
     user_id = interaction.user.id
-    current_model = user_models.get(user_id, bot.default_model)
+    current_model = bot.state.get_model(user_id, bot.default_model)
     
     model_list = "\n".join(f"{'➤' if m == current_model else '•'} {m}" for m in models)
     
@@ -347,10 +344,10 @@ async def list_models(interaction: discord.Interaction):
 async def current_model(interaction: discord.Interaction):
     """Show current model"""
     user_id = interaction.user.id
-    model = user_models.get(user_id, bot.default_model)
+    model = bot.state.get_model(user_id, bot.default_model)
     
-    system_prompt = user_system_prompts.get(user_id, "None")
-    has_context = user_id in user_contexts and len(user_contexts[user_id]) > 0
+    system_prompt = bot.state.get_system_prompt(user_id) or "None"
+    has_context = bot.state.has_context(user_id)
     
     await interaction.response.send_message(
         f"**Current Settings:**\n"
@@ -367,30 +364,27 @@ async def system_prompt(interaction: discord.Interaction, prompt: Optional[str] 
     user_id = interaction.user.id
     
     if prompt:
-        user_system_prompts[user_id] = prompt
+        bot.state.set_system_prompt(user_id, prompt)
         await interaction.response.send_message(
             f"✓ System prompt set to:\n```{prompt}```",
             ephemeral=True
         )
     else:
-        if user_id in user_system_prompts:
-            del user_system_prompts[user_id]
+        bot.state.clear_system_prompt(user_id)
         await interaction.response.send_message(
             "✓ System prompt cleared. Using model defaults.",
             ephemeral=True
         )
     
     # Clear context when changing system prompt
-    if user_id in user_contexts:
-        del user_contexts[user_id]
+    bot.state.clear_context(user_id)
 
 @bot.tree.command(name="clear_context", description="Clear your conversation context")
 async def clear_context(interaction: discord.Interaction):
     """Clear conversation context"""
     user_id = interaction.user.id
     
-    if user_id in user_contexts:
-        del user_contexts[user_id]
+    if bot.state.clear_context(user_id):
         await interaction.response.send_message(
             "✓ Conversation context cleared. Starting fresh!",
             ephemeral=True

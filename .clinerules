@@ -24,12 +24,15 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - Use `asyncio.get_event_loop().time()` for timing-sensitive operations
 
 ### State Management
-- User state stored in module-level dictionaries:
-  - `user_contexts`: Conversation history per user
-  - `user_models`: Model selection per user
-  - `user_system_prompts`: Custom prompts per user
+- User state managed by `UserStateManager` class (in `user_state_manager.py`)
+- Accessed via `bot.state` instance variable
+- Three types of per-user state:
+  - Conversation contexts (message history)
+  - Selected AI models
+  - Custom system prompts
 - State is in-memory only (cleared on bot restart)
 - Each user has independent settings and context
+- Clean API: `get_*()`, `set_*()`, `clear_*()`, `has_*()` methods
 
 ## Discord Integration
 
@@ -128,6 +131,7 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 ## File Structure
 ```
 ├── discord_ollama_bot.py    # Main bot implementation
+├── user_state_manager.py    # User state management (contexts, models, prompts)
 ├── requirements.txt         # Python dependencies
 ├── README.md               # User documentation
 ├── .env                    # Environment variables (gitignored, copy from .env.example)
