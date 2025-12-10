@@ -11,7 +11,7 @@ load_dotenv()
 
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
+OLLAMA_HOST = os.getenv('OLLAMA_HOST')
 
 print(f"Token: {'Set' if DISCORD_TOKEN else 'Not set'}, Ollama Host: {OLLAMA_HOST}")
 
