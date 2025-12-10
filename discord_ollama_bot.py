@@ -16,6 +16,7 @@ load_dotenv()
 # Configuration
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 OLLAMA_HOST = os.getenv('OLLAMA_HOST')
+OLLAMA_DEFAULT_MODEL = os.getenv('OLLAMA_DEFAULT_MODEL')
 
 print(f"Token: {'Set' if DISCORD_TOKEN else 'Not set'}, Ollama Host: {OLLAMA_HOST}")
 
@@ -26,7 +27,7 @@ class OllamaBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.ollama = None  # Will be initialized in setup_hook
         self.state = UserStateManager()  # Manages per-user state
-        self.default_model = "dolphin24b"  # Default model, will be updated on startup
+        self.default_model = OLLAMA_DEFAULT_MODEL  # Default model, will be updated on startup
     
     async def setup_hook(self):
         """Setup the bot and sync commands globally"""
