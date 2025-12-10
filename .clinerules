@@ -1,0 +1,155 @@
+# Cline Rules for Discord Ollama Bot
+
+## Project Overview
+This is a Python Discord bot that integrates with local Ollama AI instances, allowing users to chat with AI models through Discord slash commands. The bot maintains per-user conversation contexts and supports multiple models.
+
+## Technology Stack
+- **Language**: Python 3.8+
+- **Main Libraries**: discord.py (2.3.0+), aiohttp (3.9.0+), python-dotenv (1.0.0+)
+- **Architecture**: Async/await patterns with Discord slash commands
+- **API Integration**: Ollama REST API via HTTP streaming
+
+## Code Style & Patterns
+
+### Python Conventions
+- Use async/await consistently for all I/O operations
+- Include type hints for function parameters and return types (e.g., `Dict[int, List[Dict]]`, `Optional[str]`)
+- Follow PEP 8 naming conventions (snake_case for functions/variables)
+- Keep classes focused: `OllamaClient` for API, `OllamaBot` for Discord integration
+
+### Async Patterns
+- All Discord command handlers must be async functions
+- Use `aiohttp.ClientSession()` for HTTP requests (never blocking requests)
+- Implement async generators for streaming responses (`async for token in generator`)
+- Use `asyncio.get_event_loop().time()` for timing-sensitive operations
+
+### State Management
+- User state stored in module-level dictionaries:
+  - `user_contexts`: Conversation history per user
+  - `user_models`: Model selection per user
+  - `user_system_prompts`: Custom prompts per user
+- State is in-memory only (cleared on bot restart)
+- Each user has independent settings and context
+
+## Discord Integration
+
+### Command Structure
+- All commands use `@bot.tree.command()` decorator
+- Include `@app_commands.describe()` for parameter documentation
+- Command names use lowercase with underscores (e.g., `clear_context`)
+- All responses MUST use `ephemeral=True` for privacy
+
+### Response Handling
+- Use `await interaction.response.defer(ephemeral=True)` for operations >3 seconds
+- Follow up with `await interaction.followup.send()` after deferring
+- Handle Discord's 2000 character limit by chunking messages (use 1900 char chunks for safety)
+- Update streaming responses every 1.5 seconds minimum to respect rate limits
+
+### Error Handling
+- Catch `discord.errors.NotFound` when updating messages (user may have deleted them)
+- Always provide user-friendly error messages with emoji prefixes (❌, ✓, ℹ️, ⚠️)
+- Continue operation even if individual message updates fail
+
+## Ollama API Integration
+
+### Request Patterns
+- Endpoints: `/api/generate` (streaming), `/api/tags` (model list)
+- Always use `"stream": True` for generate requests
+- Include optional `system` and `context` in payloads
+- Parse JSON line-by-line from streaming responses
+
+### Response Processing
+- Stream tokens as they arrive and accumulate full response
+- Extract `context` from final chunk (`"done": True`) for conversation continuity
+- Handle incomplete JSON gracefully with try/except
+
+### Connection Management
+- Check Ollama availability with `check_connection()` on startup
+- Catch `aiohttp.ClientError` for all Ollama requests
+- Provide clear instructions if Ollama is unreachable
+
+## Environment & Configuration
+
+### Environment Files
+- `.env.example`: Template file with placeholder values (tracked in git)
+- `.env`: Actual configuration file with real credentials (gitignored)
+- Copy `.env.example` to `.env` and fill in real values
+
+### Required Variables
+- `DISCORD_BOT_TOKEN`: Discord bot authentication token
+- `OLLAMA_HOST`: Ollama API endpoint (optional, defaults to `http://localhost:11434`)
+
+### Configuration Setup
+1. Copy `.env.example` to `.env`: `cp .env.example .env`
+2. Edit `.env` and replace placeholder values with real credentials
+3. The bot validates token presence on startup and exits if missing
+
+### Security
+- `.env` is in `.gitignore` - never commit real credentials
+- `.env.example` should only contain placeholder/example values
+- Validate token presence before running bot
+- All bot responses are ephemeral (private to command user)
+
+## Testing & Validation
+
+### Manual Testing Checklist
+- Multi-user simultaneous usage (independent contexts)
+- Streaming response updates (visible progress)
+- Model switching clears context correctly
+- Long responses split across multiple messages
+- Error scenarios (Ollama down, invalid model, etc.)
+
+### Edge Cases
+- Empty model list (no models pulled)
+- Network timeouts during streaming
+- User deletes bot message mid-stream
+- Very long responses (>10k characters)
+
+## Common Operations
+
+### Adding New Commands
+1. Define async function with `@bot.tree.command()` decorator
+2. Add `@app_commands.describe()` for parameters
+3. Defer response if operation takes >3 seconds
+4. Use `ephemeral=True` for all responses
+5. Handle errors with user-friendly messages
+
+### Modifying Streaming Logic
+- Maintain chunking logic for Discord limits
+- Keep update interval ≥1.5 seconds
+- Track sent messages in list for multi-part updates
+- Always signal completion with final update
+
+### Working with User State
+- Check if user exists in state dict before reading
+- Use `.get()` with defaults for safer access
+- Clear related state when switching contexts (e.g., clear context when switching models)
+
+## File Structure
+```
+├── discord_ollama_bot.py    # Main bot implementation
+├── requirements.txt         # Python dependencies
+├── README.md               # User documentation
+├── .env                    # Environment variables (gitignored, copy from .env.example)
+├── .env.example            # Template for environment variables (tracked in git)
+├── .gitignore              # Git ignore rules (.env is ignored)
+└── .clinerules            # This file
+```
+
+## Dependencies Management
+- Keep `requirements.txt` updated with minimum versions
+- Pin major versions, allow minor/patch updates (e.g., `>=2.3.0`)
+- Test with minimum required versions before releasing
+
+## Best Practices
+- Maintain separation between `OllamaClient` (API) and `OllamaBot` (Discord) concerns
+- Log important events to console (connections, errors, model loads)
+- Provide helpful feedback messages with next steps on errors
+- Keep conversation context separate per user for privacy
+- Use Discord's native features (ephemeral messages, slash commands) over custom solutions
+
+## Git & Version Control
+- `.gitignore` contains `.env` to prevent credential leaks
+- `.env.example` is tracked and should be updated when new environment variables are added
+- Never commit real tokens, API keys, or sensitive data
+- Keep `.env.example` synchronized with actual `.env` structure (but with placeholder values)
