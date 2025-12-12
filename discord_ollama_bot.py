@@ -4,8 +4,9 @@ import aiohttp
 import asyncio
 import os
 import json
+import traceback
 from dotenv import load_dotenv
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from ollama_client import OllamaClient
 
 from user_state_manager import UserStateManager
@@ -13,27 +14,110 @@ from user_state_manager import UserStateManager
 # Load environment variables
 load_dotenv()
 
-# Configuration
+# Constants
+MESSAGE_CHUNK_SIZE = 1900  # Discord limit is 2000, use 1900 for safety margin
+STREAM_UPDATE_INTERVAL = 1.5  # Seconds between updates to respect rate limits
+
+
+def validate_config() -> Dict[str, str]:
+    """Validate and return configuration values"""
+    errors = []
+    
+    token = os.getenv('DISCORD_BOT_TOKEN')
+    if not token:
+        errors.append("DISCORD_BOT_TOKEN not set")
+    elif not token.strip():
+        errors.append("DISCORD_BOT_TOKEN is empty")
+    
+    host = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
+    if not host.startswith(('http://', 'https://')):
+        errors.append(f"OLLAMA_HOST must start with http:// or https://, got: {host}")
+    
+    default_model = os.getenv('OLLAMA_DEFAULT_MODEL', 'llama2')
+    
+    if errors:
+        for error in errors:
+            print(f"❌ Configuration Error: {error}")
+        raise ValueError(f"Configuration errors:\n" + "\n".join(f"- {e}" for e in errors))
+    
+    return {'token': token, 'host': host, 'default_model': default_model}
+
+
+async def update_chunked_messages(
+    interaction: discord.Interaction,
+    content: str,
+    sent_messages: List[discord.WebhookMessage],
+    chunk_size: int = MESSAGE_CHUNK_SIZE
+) -> Tuple[List[discord.WebhookMessage], List[str]]:
+    """
+    Update or create chunked messages for long content.
+    
+    Returns:
+        Tuple of (updated sent_messages list, list of error messages)
+    """
+    chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+    errors = []
+    
+    for idx, chunk in enumerate(chunks):
+        try:
+            if idx < len(sent_messages):
+                await sent_messages[idx].edit(content=chunk)
+            else:
+                new_msg = await interaction.followup.send(chunk, ephemeral=True)
+                sent_messages.append(new_msg)
+        except discord.errors.NotFound:
+            # Message was deleted, create a new one
+            try:
+                new_msg = await interaction.followup.send(chunk, ephemeral=True)
+                if idx < len(sent_messages):
+                    sent_messages[idx] = new_msg
+                else:
+                    sent_messages.append(new_msg)
+            except discord.errors.HTTPException as e:
+                error_msg = f"Failed to send replacement message chunk {idx}: {e}"
+                errors.append(error_msg)
+                print(error_msg)
+        except discord.errors.HTTPException as e:
+            error_msg = f"Discord API error updating chunk {idx}: {e}"
+            errors.append(error_msg)
+            print(error_msg)
+        except Exception as e:
+            error_msg = f"Unexpected error updating chunk {idx}: {e}"
+            errors.append(error_msg)
+            print(error_msg)
+            traceback.print_exc()
+    
+    return sent_messages, errors
+
+
+# Configuration - validated at startup
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
-OLLAMA_HOST = os.getenv('OLLAMA_HOST')
-OLLAMA_DEFAULT_MODEL = os.getenv('OLLAMA_DEFAULT_MODEL')
+OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://localhost:11434')
+OLLAMA_DEFAULT_MODEL = os.getenv('OLLAMA_DEFAULT_MODEL', 'llama2')
 
 print(f"Token: {'Set' if DISCORD_TOKEN else 'Not set'}, Ollama Host: {OLLAMA_HOST}")
 
+
 class OllamaBot(discord.Client):
-    def __init__(self):
+    def __init__(self, ollama_client: Optional[OllamaClient] = None, ollama_host: str = OLLAMA_HOST):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
-        self.ollama = None  # Will be initialized in setup_hook
+        self._ollama_client = ollama_client  # Injected client (optional)
+        self._ollama_host = ollama_host
+        self.ollama: Optional[OllamaClient] = None  # Will be initialized in setup_hook
         self.state = UserStateManager()  # Manages per-user state
         self.default_model = OLLAMA_DEFAULT_MODEL  # Default model, will be updated on startup
     
     async def setup_hook(self):
         """Setup the bot and sync commands globally"""
-        # Initialize Ollama client with proper session management
-        self.ollama = OllamaClient(OLLAMA_HOST)
-        await self.ollama.__aenter__()
+        # Use injected client or create new one
+        if self._ollama_client:
+            self.ollama = self._ollama_client
+            # Assume injected client is already initialized
+        else:
+            self.ollama = OllamaClient(self._ollama_host)
+            await self.ollama.__aenter__()
         
         # Sync commands globally to work across all guilds
         await self.tree.sync()
@@ -41,12 +125,15 @@ class OllamaBot(discord.Client):
     
     async def close(self):
         """Cleanup resources when bot shuts down"""
-        if self.ollama:
+        # Only cleanup if we created the client ourselves
+        if self.ollama and not self._ollama_client:
             await self.ollama.__aexit__(None, None, None)
         await super().close()
 
+
 # Initialize bot
 bot = OllamaBot()
+
 
 @bot.event
 async def on_ready():
@@ -73,6 +160,7 @@ async def on_ready():
     
     print("\nBot is ready! Use slash commands in your Discord server.")
 
+
 @bot.tree.command(name="chat", description="Chat with Ollama AI")
 @app_commands.describe(message="Your message to the AI")
 async def chat(interaction: discord.Interaction, message: str):
@@ -94,9 +182,9 @@ async def chat(interaction: discord.Interaction, message: str):
     header = f"**Model:** {model}\n**You:** {message}\n\n**AI:** "
     accumulated_response = ""
     last_update_time = asyncio.get_event_loop().time()
-    update_interval = 1.5  # Update every 1.5 seconds to respect rate limits
-    sent_messages = []  # Track all messages (for multi-part responses)
+    sent_messages: List[discord.WebhookMessage] = []
     final_context = None
+    all_errors: List[str] = []
     
     # Stream the response
     try:
@@ -114,33 +202,12 @@ async def chat(interaction: discord.Interaction, message: str):
             current_time = asyncio.get_event_loop().time()
             
             # Update message periodically to show streaming effect
-            if current_time - last_update_time >= update_interval or is_done:
+            if current_time - last_update_time >= STREAM_UPDATE_INTERVAL:
                 display_text = header + accumulated_response
-                
-                # Split content into chunks of 1900 characters
-                chunks = [display_text[i:i+1900] for i in range(0, len(display_text), 1900)]
-                
-                # Update or create messages for each chunk
-                for idx, chunk in enumerate(chunks):
-                    try:
-                        if idx < len(sent_messages):
-                            # Update existing message
-                            await sent_messages[idx].edit(content=chunk)
-                        else:
-                            # Create new message for additional chunk
-                            new_msg = await interaction.followup.send(chunk, ephemeral=True)
-                            sent_messages.append(new_msg)
-                    except discord.errors.NotFound:
-                        # Message was deleted, create a new one
-                        new_msg = await interaction.followup.send(chunk, ephemeral=True)
-                        if idx < len(sent_messages):
-                            sent_messages[idx] = new_msg
-                        else:
-                            sent_messages.append(new_msg)
-                    except Exception as e:
-                        # Log error but continue
-                        print(f"Error updating message chunk {idx}: {e}")
-                
+                sent_messages, errors = await update_chunked_messages(
+                    interaction, display_text, sent_messages
+                )
+                all_errors.extend(errors)
                 last_update_time = current_time
         
         # Final update with complete response
@@ -150,37 +217,55 @@ async def chat(interaction: discord.Interaction, message: str):
         if final_context:
             bot.state.set_context(user_id, final_context)
         
-        # Handle final message display with same multi-chunk logic
-        final_chunks = [final_display[i:i+1900] for i in range(0, len(final_display), 1900)]
+        # Handle final message display
+        sent_messages, errors = await update_chunked_messages(
+            interaction, final_display, sent_messages
+        )
+        all_errors.extend(errors)
         
-        for idx, chunk in enumerate(final_chunks):
+        # Notify user if there were errors during updates
+        if all_errors:
+            error_summary = f"\n\n⚠️ Completed with {len(all_errors)} message update error(s)"
             try:
-                if idx < len(sent_messages):
-                    # Update existing message with final content
-                    await sent_messages[idx].edit(content=chunk)
-                else:
-                    # Create new message if we need more chunks than before
-                    new_msg = await interaction.followup.send(chunk, ephemeral=True)
-                    sent_messages.append(new_msg)
-            except discord.errors.NotFound:
-                # Message was deleted, create a new one
-                new_msg = await interaction.followup.send(chunk, ephemeral=True)
-                if idx < len(sent_messages):
-                    sent_messages[idx] = new_msg
-                else:
-                    sent_messages.append(new_msg)
-            except Exception as e:
-                print(f"Error in final update for chunk {idx}: {e}")
+                await interaction.followup.send(error_summary, ephemeral=True)
+            except discord.errors.HTTPException:
+                print(f"Could not send error summary to user: {all_errors}")
                 
-    except Exception as e:
-        error_msg = f"❌ Error during streaming: {str(e)}"
+    except aiohttp.ClientError as e:
+        error_msg = f"❌ Connection error: Could not reach Ollama server. {str(e)}"
         if sent_messages:
             try:
                 await sent_messages[0].edit(content=header + error_msg)
-            except:
+            except discord.errors.HTTPException:
                 await interaction.followup.send(header + error_msg, ephemeral=True)
         else:
             await interaction.followup.send(header + error_msg, ephemeral=True)
+    except discord.errors.HTTPException as e:
+        error_msg = f"❌ Discord API error: {str(e)}"
+        print(f"Discord API error in chat command: {e}")
+        traceback.print_exc()
+        try:
+            await interaction.followup.send(error_msg, ephemeral=True)
+        except discord.errors.HTTPException:
+            print("Failed to send error message to user")
+    except Exception as e:
+        error_msg = f"❌ Unexpected error during streaming: {str(e)}"
+        print(f"Unexpected error in chat command: {e}")
+        traceback.print_exc()
+        if sent_messages:
+            try:
+                await sent_messages[0].edit(content=header + error_msg)
+            except discord.errors.HTTPException:
+                try:
+                    await interaction.followup.send(header + error_msg, ephemeral=True)
+                except discord.errors.HTTPException:
+                    print("Failed to send error message to user")
+        else:
+            try:
+                await interaction.followup.send(header + error_msg, ephemeral=True)
+            except discord.errors.HTTPException:
+                print("Failed to send error message to user")
+
 
 @bot.tree.command(name="switch_model", description="Switch to a different Ollama model")
 @app_commands.describe(model_name="Name of the model to switch to")
@@ -189,7 +274,14 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
     await interaction.response.defer(ephemeral=True)
     
     # Get available models
-    models = await bot.ollama.list_models()
+    try:
+        models = await bot.ollama.list_models()
+    except aiohttp.ClientError as e:
+        await interaction.followup.send(
+            f"❌ Could not connect to Ollama: {str(e)}",
+            ephemeral=True
+        )
+        return
     
     if not models:
         await interaction.followup.send(
@@ -214,16 +306,24 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
     bot.state.clear_context(user_id)
     
     await interaction.followup.send(
-        f"✓ Switched to model: **{model_name}**\nConversation context has been reset.",
+        f"✅ Switched to model: **{model_name}**\nConversation context has been reset.",
         ephemeral=True
     )
+
 
 @bot.tree.command(name="list_models", description="List all available Ollama models")
 async def list_models(interaction: discord.Interaction):
     """List all available models"""
     await interaction.response.defer(ephemeral=True)
     
-    models = await bot.ollama.list_models()
+    try:
+        models = await bot.ollama.list_models()
+    except aiohttp.ClientError as e:
+        await interaction.followup.send(
+            f"❌ Could not connect to Ollama: {str(e)}",
+            ephemeral=True
+        )
+        return
     
     if not models:
         await interaction.followup.send(
@@ -243,6 +343,7 @@ async def list_models(interaction: discord.Interaction):
         ephemeral=True
     )
 
+
 @bot.tree.command(name="current_model", description="Show your currently selected model")
 async def current_model(interaction: discord.Interaction):
     """Show current model"""
@@ -260,6 +361,7 @@ async def current_model(interaction: discord.Interaction):
         ephemeral=True
     )
 
+
 @bot.tree.command(name="system_prompt", description="Set a custom system prompt")
 @app_commands.describe(prompt="The system prompt to use (leave empty to clear)")
 async def system_prompt(interaction: discord.Interaction, prompt: Optional[str] = None):
@@ -269,18 +371,19 @@ async def system_prompt(interaction: discord.Interaction, prompt: Optional[str] 
     if prompt:
         bot.state.set_system_prompt(user_id, prompt)
         await interaction.response.send_message(
-            f"✓ System prompt set to:\n```{prompt}```",
+            f"✅ System prompt set to:\n```{prompt}```",
             ephemeral=True
         )
     else:
         bot.state.clear_system_prompt(user_id)
         await interaction.response.send_message(
-            "✓ System prompt cleared. Using model defaults.",
+            "✅ System prompt cleared. Using model defaults.",
             ephemeral=True
         )
     
     # Clear context when changing system prompt
     bot.state.clear_context(user_id)
+
 
 @bot.tree.command(name="clear_context", description="Clear your conversation context")
 async def clear_context(interaction: discord.Interaction):
@@ -289,7 +392,7 @@ async def clear_context(interaction: discord.Interaction):
     
     if bot.state.clear_context(user_id):
         await interaction.response.send_message(
-            "✓ Conversation context cleared. Starting fresh!",
+            "✅ Conversation context cleared. Starting fresh!",
             ephemeral=True
         )
     else:
@@ -297,6 +400,7 @@ async def clear_context(interaction: discord.Interaction):
             "ℹ️ Your conversation context is already empty.",
             ephemeral=True
         )
+
 
 @bot.tree.command(name="help", description="Show bot usage information")
 async def help_command(interaction: discord.Interaction):
@@ -328,13 +432,21 @@ All responses are private (only you can see them).
     
     await interaction.response.send_message(help_text, ephemeral=True)
 
+
 # Run the bot
 if __name__ == "__main__":
-    if not DISCORD_TOKEN:
-        print("Error: DISCORD_BOT_TOKEN not found in environment variables")
-        print("Please create a .env file with your bot token")
+    # Validate configuration before starting
+    try:
+        config = validate_config()
+    except ValueError as e:
+        print(f"\n{e}")
+        print("\nPlease create a .env file with your configuration")
         exit(1)
     
     print("Starting bot with multi-guild support...")
     print("Note: Commands are synced globally and work across all guilds")
-    bot.run(DISCORD_TOKEN)
+    
+    # Create bot with dependency injection support
+    ollama_client = OllamaClient(config['host'])
+    bot = OllamaBot(ollama_host=config['host'])
+    bot.run(config['token'])
