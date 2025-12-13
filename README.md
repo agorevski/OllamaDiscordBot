@@ -1,6 +1,6 @@
 # Discord Ollama Bot
 
-A Discord bot that connects to your local Ollama instance, allowing you to chat with AI models directly from your private Discord server. All interactions are private (ephemeral messages) - only you can see your conversations with the AI.
+A Discord bot that connects to your local Ollama instance, allowing you to chat with AI models directly from Discord. All interactions are private (ephemeral messages) - only you can see your conversations with the AI.
 
 ## Features
 
@@ -9,7 +9,9 @@ A Discord bot that connects to your local Ollama instance, allowing you to chat 
 - 💬 **Contextual conversations** - Maintains conversation history for natural dialogue
 - ⚙️ **Custom system prompts** - Customize AI behavior with system prompts
 - 👥 **Multi-user support** - Each user has their own conversation context and settings
+- 🌐 **Multi-guild support** - Works across all Discord servers the bot is invited to
 - 🎯 **Slash commands** - Easy-to-use Discord slash commands
+- 📝 **Activity logging** - Optional logging of user interactions for monitoring
 
 ## Prerequisites
 
@@ -49,13 +51,7 @@ ollama serve
 8. Select bot permissions: `Send Messages`, `Use Slash Commands`
 9. Copy the generated URL and open it in your browser to invite the bot to your server
 
-### 3. Get Your Discord Server ID
-
-1. In Discord, go to User Settings > Advanced
-2. Enable "Developer Mode"
-3. Right-click your server name and click "Copy Server ID"
-
-### 4. Install Dependencies
+### 3. Install Dependencies
 
 Navigate to the project directory and install required packages:
 
@@ -63,29 +59,39 @@ Navigate to the project directory and install required packages:
 pip install -r requirements.txt
 ```
 
-### 5. Configure the Bot
+### 4. Configure the Bot
 
 1. Copy `.env.example` to `.env`:
    ```bash
    cp .env.example .env
    ```
 
-2. Edit `.env` and add your credentials:
+2. Edit `.env` and configure your settings:
    ```
+   # Required
    DISCORD_BOT_TOKEN=your_actual_bot_token_here
-   DISCORD_GUILD_ID=your_actual_guild_id_here
+   
+   # Optional - Ollama API endpoint (defaults to http://localhost:11434)
    OLLAMA_HOST=http://localhost:11434
+   
+   # Optional - Default AI model (defaults to first available model)
+   OLLAMA_DEFAULT_MODEL=llama2
+   
+   # Optional - Enable/disable user activity logging (defaults to true)
+   ENABLE_USER_LOGGING=true
    ```
 
-### 6. Run the Bot
+### 5. Run the Bot
 
 ```bash
 python discord_ollama_bot.py
 ```
 
-You should see output indicating the bot has connected and synced commands to your server.
+You should see output indicating the bot has connected and synced commands globally.
 
-### 7. Configure Auto-Start on System Boot (Optional)
+> **Note:** Commands are synced globally and may take up to 1 hour to propagate to all servers on first run.
+
+### 6. Configure Auto-Start on System Boot (Optional)
 
 To have the bot start automatically when your Linux/Ubuntu system boots, you can create a systemd service.
 
@@ -221,16 +227,27 @@ All commands are slash commands and all responses are **private** (only you can 
 
 - **Per-User Context**: Each user has their own conversation context, allowing multiple people to use the bot simultaneously without interference
 - **Model Selection**: Each user can select their preferred model independently
-- **Conversation Memory**: The bot maintains conversation history to provide contextual responses
+- **Conversation Memory**: The bot maintains conversation history to provide contextual responses (automatically trimmed to prevent unbounded growth)
 - **Ephemeral Messages**: All responses use Discord's ephemeral messages feature, making them visible only to the command user
+- **Activity Logging**: When enabled, user interactions are logged to `logs/user_activity.log` with rotating files
+
+## User Activity Logging
+
+The bot can optionally log user interactions for monitoring and analysis:
+
+- **Location**: `logs/user_activity.log`
+- **Format**: Rotating log files (10MB max, 5 backups kept)
+- **Content**: User ID, username, guild, model used, input/output (truncated for long responses)
+- **Control**: Set `ENABLE_USER_LOGGING=false` in `.env` to disable
 
 ## Troubleshooting
 
 ### Bot doesn't respond to commands
 
 1. Make sure the bot has been invited to your server with the correct permissions
-2. Verify that commands have synced (check bot startup logs)
-3. Try restarting the bot
+2. Wait up to 1 hour for global command sync on first run
+3. Verify that commands have synced (check bot startup logs)
+4. Try restarting the bot
 
 ### "Could not connect to Ollama" error
 
@@ -245,21 +262,22 @@ All commands are slash commands and all responses are **private** (only you can 
 
 ### Commands not appearing in Discord
 
-1. Wait a few minutes for Discord to sync commands
-2. Check that `DISCORD_GUILD_ID` in `.env` matches your server ID
-3. Restart the bot and check for error messages
+1. Wait up to 1 hour for Discord to sync global commands
+2. Restart the bot and check for error messages
+3. Ensure the bot has the `applications.commands` scope
 
 ## Notes
 
 - The bot stores conversation context in memory - restarting the bot will clear all contexts
 - Long responses are automatically split into multiple messages to respect Discord's character limit
 - Each user's settings (model choice, system prompt, context) are independent
+- Commands are synced globally and work across all servers the bot is invited to
 
 ## Security
 
 - **Never share your `.env` file** or commit it to version control
-- The bot only works on the specific server (guild) you configure
 - All responses are private by default using Discord's ephemeral messages
+- User activity logs (if enabled) are stored locally and should be protected appropriately
 
 ## License
 

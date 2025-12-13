@@ -1,13 +1,14 @@
 # Cline Rules for Discord Ollama Bot
 
 ## Project Overview
-This is a Python Discord bot that integrates with local Ollama AI instances, allowing users to chat with AI models through Discord slash commands. The bot maintains per-user conversation contexts and supports multiple models.
+This is a Python Discord bot that integrates with local Ollama AI instances, allowing users to chat with AI models through Discord slash commands. The bot maintains per-user conversation contexts, supports multiple models, and includes optional activity logging.
 
 ## Technology Stack
 - **Language**: Python 3.8+
 - **Main Libraries**: discord.py (2.3.0+), aiohttp (3.9.0+), python-dotenv (1.0.0+)
 - **Architecture**: Async/await patterns with Discord slash commands
 - **API Integration**: Ollama REST API via HTTP streaming
+- **Logging**: Python's logging module with rotating file handlers
 
 ## Code Style & Patterns
 
@@ -15,7 +16,14 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - Use async/await consistently for all I/O operations
 - Include type hints for function parameters and return types (e.g., `Dict[int, List[Dict]]`, `Optional[str]`)
 - Follow PEP 8 naming conventions (snake_case for functions/variables)
-- Keep classes focused: `OllamaClient` for API, `OllamaBot` for Discord integration
+- Keep classes focused and single-responsibility
+
+### Class Responsibilities
+- `OllamaClient` (in `ollama_client.py`): HTTP communication with Ollama API
+- `OllamaBot` (in `discord_ollama_bot.py`): Discord integration and command handling
+- `UserStateManager` (in `user_state_manager.py`): Per-user conversation state
+- `UserLogger` (in `user_logger.py`): Activity logging with rotating files
+- `MessageFormatter` (in `discord_ollama_bot.py`): Consistent user-facing message formatting
 
 ### Async Patterns
 - All Discord command handlers must be async functions
@@ -27,7 +35,7 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - User state managed by `UserStateManager` class (in `user_state_manager.py`)
 - Accessed via `bot.state` instance variable
 - Three types of per-user state:
-  - Conversation contexts (message history)
+  - Conversation contexts (message history, auto-trimmed to MAX_CONTEXT_ENTRIES)
   - Selected AI models
   - Custom system prompts
 - State is in-memory only (cleared on bot restart)
@@ -41,17 +49,21 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - Include `@app_commands.describe()` for parameter documentation
 - Command names use lowercase with underscores (e.g., `clear_context`)
 - All responses MUST use `ephemeral=True` for privacy
+- Commands sync globally (not guild-specific) for multi-server support
 
 ### Response Handling
 - Use `await interaction.response.defer(ephemeral=True)` for operations >3 seconds
 - Follow up with `await interaction.followup.send()` after deferring
 - Handle Discord's 2000 character limit by chunking messages (use 1900 char chunks for safety)
 - Update streaming responses every 1.5 seconds minimum to respect rate limits
+- Use `update_chunked_messages()` helper for consistent message chunking
 
 ### Error Handling
 - Catch `discord.errors.NotFound` when updating messages (user may have deleted them)
-- Always provide user-friendly error messages with emoji prefixes (❌, ✓, ℹ️, ⚠️)
+- Catch `discord.errors.HTTPException` for Discord API errors
+- Always provide user-friendly error messages using `MessageFormatter` class
 - Continue operation even if individual message updates fail
+- Log errors to console with full tracebacks for debugging
 
 ## Ollama API Integration
 
@@ -67,9 +79,30 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - Handle incomplete JSON gracefully with try/except
 
 ### Connection Management
+- `OllamaClient` uses async context manager pattern (`__aenter__`/`__aexit__`)
 - Check Ollama availability with `check_connection()` on startup
 - Catch `aiohttp.ClientError` for all Ollama requests
 - Provide clear instructions if Ollama is unreachable
+- Support dependency injection for testing (pass pre-configured client to `OllamaBot`)
+
+## User Activity Logging
+
+### Logger Configuration
+- Managed by `UserLogger` class (in `user_logger.py`)
+- Controlled via `ENABLE_USER_LOGGING` environment variable
+- Logs stored in `logs/` directory (created automatically)
+- Uses Python's `RotatingFileHandler` (10MB max, 5 backups)
+
+### Log Format
+- Timestamp, status (SUCCESS/ERROR), user info, model, input, output
+- Long outputs truncated to 5000 characters
+- Newlines escaped for cleaner log parsing
+
+### Logging Best Practices
+- Always log successful interactions with `log_interaction()`
+- Log errors with `log_error()` for failed requests
+- Include guild name for multi-server context
+- Truncate long responses to prevent log bloat
 
 ## Environment & Configuration
 
@@ -80,16 +113,21 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 
 ### Required Variables
 - `DISCORD_BOT_TOKEN`: Discord bot authentication token
-- `OLLAMA_HOST`: Ollama API endpoint (optional, defaults to `http://localhost:11434`)
+
+### Optional Variables
+- `OLLAMA_HOST`: Ollama API endpoint (defaults to `http://localhost:11434`)
+- `OLLAMA_DEFAULT_MODEL`: Default AI model (defaults to first available)
+- `ENABLE_USER_LOGGING`: Enable activity logging (defaults to `true`)
 
 ### Configuration Setup
 1. Copy `.env.example` to `.env`: `cp .env.example .env`
 2. Edit `.env` and replace placeholder values with real credentials
-3. The bot validates token presence on startup and exits if missing
+3. The bot validates configuration on startup via `validate_config()` function
 
 ### Security
 - `.env` is in `.gitignore` - never commit real credentials
 - `.env.example` should only contain placeholder/example values
+- `logs/` directory is in `.gitignore` - never commit user logs
 - Validate token presence before running bot
 - All bot responses are ephemeral (private to command user)
 
@@ -101,12 +139,19 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 - Model switching clears context correctly
 - Long responses split across multiple messages
 - Error scenarios (Ollama down, invalid model, etc.)
+- Activity logging creates files and rotates properly
 
 ### Edge Cases
 - Empty model list (no models pulled)
 - Network timeouts during streaming
 - User deletes bot message mid-stream
 - Very long responses (>10k characters)
+- Concurrent requests from same user
+
+### Dependency Injection for Testing
+- `OllamaBot` accepts optional `ollama_client` parameter
+- Pass mock client for unit testing without real Ollama instance
+- Injected client skips automatic session management
 
 ## Common Operations
 
@@ -115,45 +160,62 @@ This is a Python Discord bot that integrates with local Ollama AI instances, all
 2. Add `@app_commands.describe()` for parameters
 3. Defer response if operation takes >3 seconds
 4. Use `ephemeral=True` for all responses
-5. Handle errors with user-friendly messages
+5. Handle errors with user-friendly messages via `MessageFormatter`
+6. Log interactions if appropriate
 
 ### Modifying Streaming Logic
 - Maintain chunking logic for Discord limits
-- Keep update interval ≥1.5 seconds
+- Keep update interval ≥1.5 seconds (STREAM_UPDATE_INTERVAL constant)
 - Track sent messages in list for multi-part updates
 - Always signal completion with final update
+- Use `update_chunked_messages()` helper function
 
 ### Working with User State
 - Check if user exists in state dict before reading
 - Use `.get()` with defaults for safer access
 - Clear related state when switching contexts (e.g., clear context when switching models)
+- Context auto-trims to MAX_CONTEXT_ENTRIES to prevent memory growth
+
+### Adding New Environment Variables
+1. Add variable to `.env.example` with placeholder value
+2. Update `validate_config()` function to read and validate
+3. Pass validated value to appropriate component
+4. Update README.md and .clinerules documentation
 
 ## File Structure
 ```
-├── discord_ollama_bot.py    # Main bot implementation
+├── discord_ollama_bot.py    # Main bot implementation, commands, MessageFormatter
+├── ollama_client.py         # Ollama API client with streaming support
 ├── user_state_manager.py    # User state management (contexts, models, prompts)
+├── user_logger.py           # User activity logging with rotation
 ├── requirements.txt         # Python dependencies
-├── README.md               # User documentation
-├── .env                    # Environment variables (gitignored, copy from .env.example)
-├── .env.example            # Template for environment variables (tracked in git)
-├── .gitignore              # Git ignore rules (.env is ignored)
-└── .clinerules            # This file
+├── README.md                # User documentation
+├── ARCHITECTURAL_IMPROVEMENTS.md  # Future improvement suggestions
+├── .env                     # Environment variables (gitignored)
+├── .env.example             # Template for environment variables (tracked)
+├── .gitignore               # Git ignore rules
+├── .clinerules              # This file - development guidelines
+└── logs/                    # Activity logs directory (gitignored)
+    └── user_activity.log    # Rotating log files
 ```
 
 ## Dependencies Management
 - Keep `requirements.txt` updated with minimum versions
 - Pin major versions, allow minor/patch updates (e.g., `>=2.3.0`)
 - Test with minimum required versions before releasing
+- Current dependencies: discord.py, aiohttp, python-dotenv
 
 ## Best Practices
-- Maintain separation between `OllamaClient` (API) and `OllamaBot` (Discord) concerns
+- Maintain separation of concerns between classes
 - Log important events to console (connections, errors, model loads)
 - Provide helpful feedback messages with next steps on errors
 - Keep conversation context separate per user for privacy
-- Use Discord's native features (ephemeral messages, slash commands) over custom solutions
+- Use Discord's native features (ephemeral messages, slash commands)
+- Use `MessageFormatter` for consistent user-facing messages
+- Support dependency injection for testability
 
 ## Git & Version Control
-- `.gitignore` contains `.env` to prevent credential leaks
+- `.gitignore` contains `.env` and `logs/` to prevent credential/data leaks
 - `.env.example` is tracked and should be updated when new environment variables are added
 - Never commit real tokens, API keys, or sensitive data
 - Keep `.env.example` synchronized with actual `.env` structure (but with placeholder values)

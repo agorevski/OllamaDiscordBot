@@ -1,2 +1,8 @@
+# Environment files with secrets
 .env
+
+# Python cache
 **/__pycache__/
+
+# User activity logs (may contain sensitive data)
+logs/
