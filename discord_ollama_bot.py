@@ -8,8 +8,8 @@ import traceback
 from dotenv import load_dotenv
 from typing import Optional, Dict, List, Tuple
 from ollama_client import OllamaClient
-
 from user_state_manager import UserStateManager
+from user_logger import UserLogger
 
 # Load environment variables
 load_dotenv()
@@ -17,6 +17,30 @@ load_dotenv()
 # Constants
 MESSAGE_CHUNK_SIZE = 1900  # Discord limit is 2000, use 1900 for safety margin
 STREAM_UPDATE_INTERVAL = 1.5  # Seconds between updates to respect rate limits
+
+
+class MessageFormatter:
+    """Standardized message formatting for consistent user-facing messages"""
+    
+    @staticmethod
+    def success(message: str) -> str:
+        """Format a success message"""
+        return f"✅ {message}"
+    
+    @staticmethod
+    def error(message: str) -> str:
+        """Format an error message"""
+        return f"❌ {message}"
+    
+    @staticmethod
+    def warning(message: str) -> str:
+        """Format a warning message"""
+        return f"⚠️ {message}"
+    
+    @staticmethod
+    def info(message: str) -> str:
+        """Format an info message"""
+        return f"ℹ️ {message}"
 
 
 def validate_config() -> Dict[str, str]:
@@ -34,13 +58,14 @@ def validate_config() -> Dict[str, str]:
         errors.append(f"OLLAMA_HOST must start with http:// or https://, got: {host}")
     
     default_model = os.getenv('OLLAMA_DEFAULT_MODEL', 'llama2')
+    enable_logging = os.getenv('ENABLE_USER_LOGGING', 'true').lower() in ('true', '1', 'yes')
     
     if errors:
         for error in errors:
             print(f"❌ Configuration Error: {error}")
         raise ValueError(f"Configuration errors:\n" + "\n".join(f"- {e}" for e in errors))
     
-    return {'token': token, 'host': host, 'default_model': default_model}
+    return {'token': token, 'host': host, 'default_model': default_model, 'enable_logging': enable_logging}
 
 
 async def update_chunked_messages(
@@ -99,7 +124,7 @@ print(f"Token: {'Set' if DISCORD_TOKEN else 'Not set'}, Ollama Host: {OLLAMA_HOS
 
 
 class OllamaBot(discord.Client):
-    def __init__(self, ollama_client: Optional[OllamaClient] = None, ollama_host: str = OLLAMA_HOST):
+    def __init__(self, ollama_client: Optional[OllamaClient] = None, ollama_host: str = OLLAMA_HOST, enable_logging: bool = True):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
@@ -107,6 +132,7 @@ class OllamaBot(discord.Client):
         self._ollama_host = ollama_host
         self.ollama: Optional[OllamaClient] = None  # Will be initialized in setup_hook
         self.state = UserStateManager()  # Manages per-user state
+        self.user_logger = UserLogger(enabled=enable_logging)  # User activity logging
         self.default_model = OLLAMA_DEFAULT_MODEL  # Default model, will be updated on startup
     
     async def setup_hook(self):
@@ -223,16 +249,38 @@ async def chat(interaction: discord.Interaction, message: str):
         )
         all_errors.extend(errors)
         
+        # Log successful interaction
+        guild_name = interaction.guild.name if interaction.guild else None
+        bot.user_logger.log_interaction(
+            user_id=user_id,
+            username=str(interaction.user),
+            guild_name=guild_name,
+            model=model,
+            input_message=message,
+            output_response=accumulated_response,
+            success=True
+        )
+        
         # Notify user if there were errors during updates
         if all_errors:
-            error_summary = f"\n\n⚠️ Completed with {len(all_errors)} message update error(s)"
+            error_summary = MessageFormatter.warning(f"Completed with {len(all_errors)} message update error(s)")
             try:
                 await interaction.followup.send(error_summary, ephemeral=True)
             except discord.errors.HTTPException:
                 print(f"Could not send error summary to user: {all_errors}")
                 
     except aiohttp.ClientError as e:
-        error_msg = f"❌ Connection error: Could not reach Ollama server. {str(e)}"
+        error_msg = MessageFormatter.error(f"Connection error: Could not reach Ollama server. {str(e)}")
+        # Log failed interaction
+        guild_name = interaction.guild.name if interaction.guild else None
+        bot.user_logger.log_error(
+            user_id=user_id,
+            username=str(interaction.user),
+            guild_name=guild_name,
+            model=model,
+            input_message=message,
+            error_message=str(e)
+        )
         if sent_messages:
             try:
                 await sent_messages[0].edit(content=header + error_msg)
@@ -241,17 +289,37 @@ async def chat(interaction: discord.Interaction, message: str):
         else:
             await interaction.followup.send(header + error_msg, ephemeral=True)
     except discord.errors.HTTPException as e:
-        error_msg = f"❌ Discord API error: {str(e)}"
+        error_msg = MessageFormatter.error(f"Discord API error: {str(e)}")
         print(f"Discord API error in chat command: {e}")
         traceback.print_exc()
+        # Log failed interaction
+        guild_name = interaction.guild.name if interaction.guild else None
+        bot.user_logger.log_error(
+            user_id=user_id,
+            username=str(interaction.user),
+            guild_name=guild_name,
+            model=model,
+            input_message=message,
+            error_message=str(e)
+        )
         try:
             await interaction.followup.send(error_msg, ephemeral=True)
         except discord.errors.HTTPException:
             print("Failed to send error message to user")
     except Exception as e:
-        error_msg = f"❌ Unexpected error during streaming: {str(e)}"
+        error_msg = MessageFormatter.error(f"Unexpected error during streaming: {str(e)}")
         print(f"Unexpected error in chat command: {e}")
         traceback.print_exc()
+        # Log failed interaction
+        guild_name = interaction.guild.name if interaction.guild else None
+        bot.user_logger.log_error(
+            user_id=user_id,
+            username=str(interaction.user),
+            guild_name=guild_name,
+            model=model,
+            input_message=message,
+            error_message=str(e)
+        )
         if sent_messages:
             try:
                 await sent_messages[0].edit(content=header + error_msg)
@@ -278,14 +346,14 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
         models = await bot.ollama.list_models()
     except aiohttp.ClientError as e:
         await interaction.followup.send(
-            f"❌ Could not connect to Ollama: {str(e)}",
+            MessageFormatter.error(f"Could not connect to Ollama: {str(e)}"),
             ephemeral=True
         )
         return
     
     if not models:
         await interaction.followup.send(
-            "❌ Could not retrieve models from Ollama. Make sure Ollama is running.",
+            MessageFormatter.error("Could not retrieve models from Ollama. Make sure Ollama is running."),
             ephemeral=True
         )
         return
@@ -293,7 +361,7 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
     # Check if model exists
     if model_name not in models:
         await interaction.followup.send(
-            f"❌ Model '{model_name}' not found.\n\nAvailable models:\n" + "\n".join(f"• {m}" for m in models),
+            MessageFormatter.error(f"Model '{model_name}' not found.") + "\n\nAvailable models:\n" + "\n".join(f"• {m}" for m in models),
             ephemeral=True
         )
         return
@@ -306,7 +374,7 @@ async def switch_model(interaction: discord.Interaction, model_name: str):
     bot.state.clear_context(user_id)
     
     await interaction.followup.send(
-        f"✅ Switched to model: **{model_name}**\nConversation context has been reset.",
+        MessageFormatter.success(f"Switched to model: **{model_name}**") + "\nConversation context has been reset.",
         ephemeral=True
     )
 
@@ -320,15 +388,15 @@ async def list_models(interaction: discord.Interaction):
         models = await bot.ollama.list_models()
     except aiohttp.ClientError as e:
         await interaction.followup.send(
-            f"❌ Could not connect to Ollama: {str(e)}",
+            MessageFormatter.error(f"Could not connect to Ollama: {str(e)}"),
             ephemeral=True
         )
         return
     
     if not models:
         await interaction.followup.send(
-            "❌ No models found. Make sure Ollama is running and you have pulled at least one model.\n\n"
-            "Pull a model with: `ollama pull llama2`",
+            MessageFormatter.error("No models found. Make sure Ollama is running and you have pulled at least one model.") +
+            "\n\nPull a model with: `ollama pull llama2`",
             ephemeral=True
         )
         return
@@ -371,13 +439,13 @@ async def system_prompt(interaction: discord.Interaction, prompt: Optional[str] 
     if prompt:
         bot.state.set_system_prompt(user_id, prompt)
         await interaction.response.send_message(
-            f"✅ System prompt set to:\n```{prompt}```",
+            MessageFormatter.success(f"System prompt set to:") + f"\n```{prompt}```",
             ephemeral=True
         )
     else:
         bot.state.clear_system_prompt(user_id)
         await interaction.response.send_message(
-            "✅ System prompt cleared. Using model defaults.",
+            MessageFormatter.success("System prompt cleared. Using model defaults."),
             ephemeral=True
         )
     
@@ -392,12 +460,12 @@ async def clear_context(interaction: discord.Interaction):
     
     if bot.state.clear_context(user_id):
         await interaction.response.send_message(
-            "✅ Conversation context cleared. Starting fresh!",
+            MessageFormatter.success("Conversation context cleared. Starting fresh!"),
             ephemeral=True
         )
     else:
         await interaction.response.send_message(
-            "ℹ️ Your conversation context is already empty.",
+            MessageFormatter.info("Your conversation context is already empty."),
             ephemeral=True
         )
 
@@ -446,7 +514,9 @@ if __name__ == "__main__":
     print("Starting bot with multi-guild support...")
     print("Note: Commands are synced globally and work across all guilds")
     
-    # Create bot with dependency injection support
-    ollama_client = OllamaClient(config['host'])
-    bot = OllamaBot(ollama_host=config['host'])
+    # Create bot with dependency injection support and logging config
+    enable_logging = config['enable_logging']
+    print(f"User activity logging: {'Enabled' if enable_logging else 'Disabled'}")
+    
+    bot = OllamaBot(ollama_host=config['host'], enable_logging=enable_logging)
     bot.run(config['token'])

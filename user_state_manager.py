@@ -7,7 +7,10 @@ Manages per-user conversation state including:
 - Custom system prompts
 """
 
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List
+
+# Maximum number of context entries to keep per user (prevents unbounded memory growth)
+MAX_CONTEXT_ENTRIES = 10
 
 
 class UserStateManager:
@@ -22,8 +25,11 @@ class UserStateManager:
         """Get user's conversation context"""
         return self._contexts.get(user_id)
     
-    def set_context(self, user_id: int, context: List[Dict]) -> None:
-        """Set user's conversation context"""
+    def set_context(self, user_id: int, context: List[Any]) -> None:
+        """Set user's conversation context with automatic trimming"""
+        # Trim context to prevent unbounded growth
+        if isinstance(context, list) and len(context) > MAX_CONTEXT_ENTRIES:
+            context = context[-MAX_CONTEXT_ENTRIES:]
         self._contexts[user_id] = context
     
     def clear_context(self, user_id: int) -> bool:

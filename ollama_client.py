@@ -1,6 +1,6 @@
 import aiohttp
 import json
-from typing import Optional, List
+from typing import AsyncGenerator, Optional, List, Tuple
 
 class OllamaClient:
     """Client for interacting with local Ollama instance"""
@@ -26,7 +26,8 @@ class OllamaClient:
         model: str,
         prompt: str,
         system: Optional[str] = None,
-        context: Optional[List] = None):
+        context: Optional[List] = None
+    ) -> AsyncGenerator[Tuple[str, bool, Optional[List]], None]:
         """Generate a response from Ollama with streaming support"""
         if not self.session:
             raise RuntimeError("OllamaClient session not initialized. Use async with context manager.")
